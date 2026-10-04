@@ -18,6 +18,8 @@ export interface WorkspacePlan {
   deskWidthMm: number
   deskHeightMm: number
   items: DeskItem[]
+  /** 已现场核对就位的设备 id；与 items 始终保持对齐：新增的不在其中，删除后会被清理 */
+  checkedItemIds: string[]
   updatedAt: string
 }
 
@@ -102,6 +104,35 @@ export function createPlan(name = '我的工作台', withDemo = true): Workspace
     deskWidthMm: DEFAULT_DESK.widthMm,
     deskHeightMm: DEFAULT_DESK.heightMm,
     items,
+    checkedItemIds: [],
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+/** 只保留仍存在于 items 中的就位记录，避免删除设备后留下无法取消的悬空勾选 */
+export function pruneCheckedItemIds(items: DeskItem[], checkedItemIds: string[] | undefined): string[] {
+  if (!Array.isArray(checkedItemIds)) return []
+  const liveIds = new Set(items.map((item) => item.id))
+  return [...new Set(checkedItemIds.filter((id) => typeof id === 'string' && liveIds.has(id)))]
+}
+
+/** 老版本存档没有 checkedItemIds，读取时统一补齐，并剔除已删设备的记录 */
+export function normalizePlan(plan: WorkspacePlan): WorkspacePlan {
+  return { ...plan, checkedItemIds: pruneCheckedItemIds(plan.items, plan.checkedItemIds) }
+}
+
+export function normalizeDocument(document: WorkspaceDocument): WorkspaceDocument {
+  return { ...document, plans: document.plans.map(normalizePlan) }
+}
+
+/** 复制方案：设备全部获得新 id，核对状态重置为空，副本看起来绝不像已经摆完 */
+export function duplicatePlan(source: WorkspacePlan): WorkspacePlan {
+  return {
+    ...source,
+    id: createId('plan'),
+    name: `${source.name} · 副本`,
+    items: source.items.map((item) => ({ ...item, id: createId('item') })),
+    checkedItemIds: [],
     updatedAt: new Date().toISOString(),
   }
 }

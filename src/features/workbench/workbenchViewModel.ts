@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createId,
   createInitialDocument,
   createPlan,
+  duplicatePlan,
+  pruneCheckedItemIds,
   type DeskItem,
   type DeviceType,
   type LayoutAnalysis,
@@ -14,6 +15,7 @@ import { clampDeskSize, clampItemDimension } from '../../shared/layoutRules'
 import { moveCanvasItem, rotateCanvasItem } from '../canvas/canvasViewModel'
 import { createMaterialDraft } from '../materials/materialsViewModel'
 import { inspectPlan } from '../inspection/inspectionViewModel'
+import { allItemIdsChecked, summarizeChecklist, toggleItemChecked, type ChecklistSummary } from '../checklist/checklistViewModel'
 import { LocalWorkspaceRepository, type WorkspaceRepository } from './workspaceRepository'
 
 export interface WorkspaceViewModel {
@@ -24,6 +26,8 @@ export interface WorkspaceViewModel {
   analysis: LayoutAnalysis
   issueIds: string[]
   issueCount: number
+  checklist: ChecklistSummary
+  isCheckMode: boolean
   feedback: string
   isPreviewOpen: boolean
   selectItem: (id: string | null) => void
@@ -34,14 +38,20 @@ export interface WorkspaceViewModel {
   updateItem: (id: string, patch: Partial<Pick<DeskItem, 'widthMm' | 'heightMm' | 'x' | 'y'>>) => void
   updateDesk: (field: 'deskWidthMm' | 'deskHeightMm', value: number) => void
   createNewPlan: () => void
-  duplicatePlan: () => void
+  duplicateCurrentPlan: () => void
   selectPlan: (id: string) => void
   deleteCurrentPlan: () => void
   openPreview: () => void
   closePreview: () => void
+  enterCheckMode: () => void
+  exitCheckMode: () => void
+  toggleChecked: (id: string) => void
+  checkAll: () => void
+  resetChecks: () => void
 }
 
 const emptyInspection = { analysis: { overlapIds: [], outOfBoundsIds: [], coveragePercent: 0, status: 'clear' as const }, issueIds: [], issueCount: 0 }
+const emptyChecklist: ChecklistSummary = { total: 0, checkedCount: 0, pendingCount: 0, percent: 0, complete: false, pendingIds: [], entries: [] }
 
 export function useWorkspaceViewModel(repository?: WorkspaceRepository): WorkspaceViewModel {
   const repositoryRef = useRef(repository ?? new LocalWorkspaceRepository())
@@ -49,6 +59,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const [document, setDocument] = useState<WorkspaceDocument | null>(null)
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
+  const [isCheckMode, setIsCheckMode] = useState(false)
   const [feedback, setFeedback] = useState('正在准备你的工作台…')
 
   useEffect(() => {
@@ -75,6 +86,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const selectedItem = activePlan?.items.find((item) => item.id === selectedItemId) ?? null
   const inspection = useMemo(() => activePlan ? inspectPlan(activePlan) : emptyInspection, [activePlan])
   const { analysis, issueIds, issueCount } = inspection
+  const checklist = useMemo(() => activePlan ? summarizeChecklist(activePlan) : emptyChecklist, [activePlan])
 
   const persist = useCallback(async (nextDocument: WorkspaceDocument, message: string) => {
     setDocument(nextDocument)
@@ -91,7 +103,13 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
 
   const updateActivePlan = useCallback((updater: (plan: WorkspacePlan) => WorkspacePlan, message: string) => {
     if (!document || !activePlan) return
-    const nextPlan = { ...updater(activePlan), updatedAt: new Date().toISOString() }
+    const updated = updater(activePlan)
+    // 每次落盘前再裁一遍：删掉设备时它的就位记录必须同时消失，不留死记录
+    const nextPlan: WorkspacePlan = {
+      ...updated,
+      checkedItemIds: pruneCheckedItemIds(updated.items, updated.checkedItemIds),
+      updatedAt: new Date().toISOString(),
+    }
     const nextDocument = { ...document, plans: document.plans.map((plan) => plan.id === nextPlan.id ? nextPlan : plan) }
     void persist(nextDocument, message)
   }, [activePlan, document, persist])
@@ -142,16 +160,10 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     setSelectedItemId(null)
   }, [document, persist])
 
-  const duplicatePlan = useCallback(() => {
+  const duplicateCurrentPlan = useCallback(() => {
     if (!document || !activePlan) return
-    const copy: WorkspacePlan = {
-      ...activePlan,
-      id: createId('plan'),
-      name: `${activePlan.name} · 副本`,
-      items: activePlan.items.map((item) => ({ ...item, id: createId('item') })),
-      updatedAt: new Date().toISOString(),
-    }
-    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制')
+    const copy = duplicatePlan(activePlan)
+    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制，副本的核对状态已重置')
     setSelectedItemId(null)
   }, [activePlan, document, persist])
 
@@ -174,6 +186,27 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const openPreview = useCallback(() => setIsPreviewOpen(true), [])
   const closePreview = useCallback(() => setIsPreviewOpen(false), [])
 
+  const enterCheckMode = useCallback(() => {
+    setIsCheckMode(true)
+    setSelectedItemId(null)
+  }, [])
+  const exitCheckMode = useCallback(() => setIsCheckMode(false), [])
+
+  const toggleChecked = useCallback((id: string) => {
+    updateActivePlan((plan) => {
+      if (!plan.items.some((item) => item.id === id)) return plan
+      return { ...plan, checkedItemIds: toggleItemChecked(plan.checkedItemIds, id) }
+    }, '核对结果已保存')
+  }, [updateActivePlan])
+
+  const checkAll = useCallback(() => {
+    updateActivePlan((plan) => ({ ...plan, checkedItemIds: allItemIdsChecked(plan.items) }), '已全部标记为就位')
+  }, [updateActivePlan])
+
+  const resetChecks = useCallback(() => {
+    updateActivePlan((plan) => ({ ...plan, checkedItemIds: [] }), '核对进度已重置')
+  }, [updateActivePlan])
+
   return {
     status,
     document,
@@ -182,6 +215,8 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     analysis,
     issueIds,
     issueCount,
+    checklist,
+    isCheckMode,
     feedback,
     isPreviewOpen,
     selectItem,
@@ -192,10 +227,15 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     updateItem,
     updateDesk,
     createNewPlan,
-    duplicatePlan,
+    duplicateCurrentPlan,
     selectPlan,
     deleteCurrentPlan,
     openPreview,
     closePreview,
+    enterCheckMode,
+    exitCheckMode,
+    toggleChecked,
+    checkAll,
+    resetChecks,
   }
 }
