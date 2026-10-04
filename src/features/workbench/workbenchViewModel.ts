@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createId,
   createInitialDocument,
   createPlan,
+  duplicatePlan as copyPlan,
   type DeskItem,
   type DeviceType,
   type LayoutAnalysis,
@@ -14,6 +14,7 @@ import { clampDeskSize, clampItemDimension } from '../../shared/layoutRules'
 import { moveCanvasItem, rotateCanvasItem } from '../canvas/canvasViewModel'
 import { createMaterialDraft } from '../materials/materialsViewModel'
 import { inspectPlan } from '../inspection/inspectionViewModel'
+import { createPlacementChecklist, markAllPlaced, reconcilePlacedItemIds, setItemPlaced, summarizePlacement, type PlacementChecklistItem, type PlacementSummary } from '../placement/placementViewModel'
 import { LocalWorkspaceRepository, type WorkspaceRepository } from './workspaceRepository'
 
 export interface WorkspaceViewModel {
@@ -24,6 +25,9 @@ export interface WorkspaceViewModel {
   analysis: LayoutAnalysis
   issueIds: string[]
   issueCount: number
+  isCheckMode: boolean
+  placementSummary: PlacementSummary
+  placementItems: PlacementChecklistItem[]
   feedback: string
   isPreviewOpen: boolean
   selectItem: (id: string | null) => void
@@ -37,6 +41,9 @@ export interface WorkspaceViewModel {
   duplicatePlan: () => void
   selectPlan: (id: string) => void
   deleteCurrentPlan: () => void
+  setCheckMode: (active: boolean) => void
+  setItemPlacement: (id: string, placed: boolean) => void
+  markEveryItemPlaced: () => void
   openPreview: () => void
   closePreview: () => void
 }
@@ -48,6 +55,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const [status, setStatus] = useState<WorkspaceStatus>('loading')
   const [document, setDocument] = useState<WorkspaceDocument | null>(null)
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
+  const [isCheckMode, setIsCheckMode] = useState(false)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [feedback, setFeedback] = useState('正在准备你的工作台…')
 
@@ -75,6 +83,8 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const selectedItem = activePlan?.items.find((item) => item.id === selectedItemId) ?? null
   const inspection = useMemo(() => activePlan ? inspectPlan(activePlan) : emptyInspection, [activePlan])
   const { analysis, issueIds, issueCount } = inspection
+  const placementSummary = useMemo(() => activePlan ? summarizePlacement(activePlan) : summarizePlacement({ items: [], placedItemIds: [] }), [activePlan])
+  const placementItems = useMemo(() => activePlan ? createPlacementChecklist(activePlan) : [], [activePlan])
 
   const persist = useCallback(async (nextDocument: WorkspaceDocument, message: string) => {
     setDocument(nextDocument)
@@ -91,7 +101,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
 
   const updateActivePlan = useCallback((updater: (plan: WorkspacePlan) => WorkspacePlan, message: string) => {
     if (!document || !activePlan) return
-    const nextPlan = { ...updater(activePlan), updatedAt: new Date().toISOString() }
+    const nextPlan = reconcilePlacedItemIds({ ...updater(activePlan), updatedAt: new Date().toISOString() })
     const nextDocument = { ...document, plans: document.plans.map((plan) => plan.id === nextPlan.id ? nextPlan : plan) }
     void persist(nextDocument, message)
   }, [activePlan, document, persist])
@@ -144,14 +154,8 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
 
   const duplicatePlan = useCallback(() => {
     if (!document || !activePlan) return
-    const copy: WorkspacePlan = {
-      ...activePlan,
-      id: createId('plan'),
-      name: `${activePlan.name} · 副本`,
-      items: activePlan.items.map((item) => ({ ...item, id: createId('item') })),
-      updatedAt: new Date().toISOString(),
-    }
-    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制')
+    const copy = copyPlan(activePlan)
+    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制，核对状态已重置')
     setSelectedItemId(null)
   }, [activePlan, document, persist])
 
@@ -174,6 +178,21 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const openPreview = useCallback(() => setIsPreviewOpen(true), [])
   const closePreview = useCallback(() => setIsPreviewOpen(false), [])
 
+  const setCheckMode = useCallback((active: boolean) => {
+    setIsCheckMode(active)
+    setSelectedItemId(null)
+    setFeedback(active ? '现场核对已开始，点击设备或清单切换就位状态' : '已退出核对模式')
+  }, [])
+
+  const setItemPlacement = useCallback((id: string, placed: boolean) => {
+    updateActivePlan((plan) => setItemPlaced(plan, id, placed), placed ? '设备已标记为就位' : '设备已改回未就位')
+  }, [updateActivePlan])
+
+  const markEveryItemPlaced = useCallback(() => {
+    if (!activePlan || activePlan.items.length === 0) return
+    updateActivePlan(markAllPlaced, '全部设备已标记为就位')
+  }, [activePlan, updateActivePlan])
+
   return {
     status,
     document,
@@ -182,6 +201,9 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     analysis,
     issueIds,
     issueCount,
+    isCheckMode,
+    placementSummary,
+    placementItems,
     feedback,
     isPreviewOpen,
     selectItem,
@@ -195,6 +217,9 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     duplicatePlan,
     selectPlan,
     deleteCurrentPlan,
+    setCheckMode,
+    setItemPlacement,
+    markEveryItemPlaced,
     openPreview,
     closePreview,
   }

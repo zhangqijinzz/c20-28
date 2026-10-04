@@ -18,6 +18,7 @@ export interface WorkspacePlan {
   deskWidthMm: number
   deskHeightMm: number
   items: DeskItem[]
+  placedItemIds: string[]
   updatedAt: string
 }
 
@@ -102,6 +103,19 @@ export function createPlan(name = '我的工作台', withDemo = true): Workspace
     deskWidthMm: DEFAULT_DESK.widthMm,
     deskHeightMm: DEFAULT_DESK.heightMm,
     items,
+    placedItemIds: [],
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+export function duplicatePlan(plan: WorkspacePlan): WorkspacePlan {
+  const itemIdMap = new Map(plan.items.map((item) => [item.id, createId('item')]))
+  return {
+    ...plan,
+    id: createId('plan'),
+    name: `${plan.name} · 副本`,
+    items: plan.items.map((item) => ({ ...item, id: itemIdMap.get(item.id) ?? createId('item') })),
+    placedItemIds: [],
     updatedAt: new Date().toISOString(),
   }
 }

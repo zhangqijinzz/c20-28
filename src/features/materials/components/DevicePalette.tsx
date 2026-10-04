@@ -3,12 +3,13 @@ import type { DeviceDefinition, DeviceType } from '../../../shared/models'
 
 interface DevicePaletteProps {
   devices: DeviceDefinition[]
+  disabled?: boolean
   onAdd: (type: DeviceType) => void
 }
 
 const icons = { monitor: Monitor, keyboard: Keyboard, lamp: LampDesk, speaker: Speaker, stand: TabletSmartphone }
 
-export function DevicePalette({ devices, onAdd }: DevicePaletteProps) {
+export function DevicePalette({ devices, disabled = false, onAdd }: DevicePaletteProps) {
   return (
     <section className="module-panel palette-panel" aria-labelledby="palette-title">
       <div className="module-heading">
@@ -18,12 +19,12 @@ export function DevicePalette({ devices, onAdd }: DevicePaletteProps) {
         </div>
         <span className="module-count">{devices.length}</span>
       </div>
-      <p className="panel-description">点击添加到桌面，尺寸可在右侧调整。</p>
+      <p className="panel-description">{disabled ? '核对模式中暂时锁定设备添加。' : '点击添加到桌面，尺寸可在右侧调整。'}</p>
       <div className="device-list">
         {devices.map((device) => {
           const Icon = icons[device.type]
           return (
-            <button className="device-card" key={device.type} onClick={() => onAdd(device.type)} type="button">
+            <button className="device-card" key={device.type} disabled={disabled} onClick={() => onAdd(device.type)} type="button">
               <span className="device-icon" style={{ backgroundColor: device.color }}><Icon size={20} strokeWidth={1.8} /></span>
               <span className="device-copy"><strong>{device.label}</strong><small>{device.hint}</small></span>
               <span className="add-mark">+</span>
